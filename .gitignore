@@ -1,2 +1,4 @@
 fourier/.env
 fourier/target
+historical/*
+!historical/readme.txt

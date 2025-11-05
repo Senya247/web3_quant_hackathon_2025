@@ -22,4 +22,7 @@ thiserror = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 hex = "0.4"  # Add this for hex encoding
 dotenv = "0.15.0"
+csv = "1.4.0"
+anyhow = "1.0.100"
+time = "0.3.44"
 

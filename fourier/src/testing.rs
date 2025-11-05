@@ -4,7 +4,7 @@ use binance::market::Market;
 fn main() {
     let market: Market = Binance::new(None, None);
 
-    match market.get_price("ETH") {
+    match market.get_price("ETHUSDT") {
         Ok(answer) => println!("{:?}", answer),
         Err(e) => println!("Error: {:?}", e),
     }
