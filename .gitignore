@@ -2,3 +2,4 @@ fourier/.env
 fourier/target
 historical/*
 !historical/readme.txt
+fourier/test.py

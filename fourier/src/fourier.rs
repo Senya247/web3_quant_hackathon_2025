@@ -1,9 +1,11 @@
+use std::sync::mpsc;
+
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Copy, Clone)]
 pub struct Candle {
     #[serde(rename = "datetime")]
-    pub time: i64,
+    pub time: u64,
     pub open: f64,
     pub high: f64,
     pub low: f64,
@@ -13,14 +15,13 @@ pub struct Candle {
 }
 
 #[derive(Debug, Default)]
-struct Position {
+pub struct Position {
     qty: f64,       // base asset quantity (BTC)
     avg_price: f64, // quote per base (USDT per BTC)
 }
 
 impl Position {
     const FEE_RATE: f64 = 0.001;
-
     fn total_cost(&self) -> f64 {
         self.qty * self.avg_price
     }
@@ -74,7 +75,7 @@ impl Position {
 }
 
 pub struct FourierStrat {
-    capital: f64, // money
+    pub capital: f64, // money
     candles: Vec<Candle>,
     position: Position, // bought at, bought how much
     fees: f64,
@@ -82,12 +83,8 @@ pub struct FourierStrat {
 
 impl FourierStrat {
     pub fn should_long(&self) -> bool {
-        if self.candles.len() < 10 {
-            return false;
-        }
-
-        let short_ema = self.ema(5); 
-        let long_ema = self.ema(15);
+        let short_ema = self.ema(3);
+        let long_ema = self.ema(5);
         let momentum = self.momentum();
 
         // println!(
@@ -100,44 +97,68 @@ impl FourierStrat {
         short_ema > long_ema && momentum > 0.0
     }
 
-    pub fn go_long(&mut self) {
+    pub fn go_long(&mut self) -> Option<f64> {
         let p = self.price();
         if p == 0.0 || self.capital <= 0.0 {
             // println!("Skipping - price: {:.2}, capital: {:.2}", p, self.capital);
-            return;
+            return None;
         }
 
-        let risk_capital = self.capital * 0.1; // Use only 10%
+        let risk_capital = self.capital * 0.05; // Use only 10%
 
         if risk_capital < 1.0 {
             // println!("Skipping - risk capital too small: {:.6}", risk_capital);
-            return;
+            return None;
         }
 
-        let qty = risk_capital / p;
+        let qty = (risk_capital / p).round();
         println!(
-            "Trading - capital: {:.2}, risk: {:.2}, price: {:.2}, qty: {:.8}",
-            self.capital, risk_capital, p, qty
+            "{} Trading - capital: {:.2}, risk: {:.2}, price: {:.2}, qty: {:.8}",
+            self.candles.last().unwrap().time,
+            self.capital,
+            risk_capital,
+            p,
+            qty
         );
 
-        if qty > 1e-12 {
-            self.buy(qty);
-        }
+        self.buy(qty);
+        println!("BUY {} BTC at {}", qty, self.price());
+        return Some(qty);
     }
 
-    pub fn update_position(&mut self) {
+    // return whether liquidate all or not LMAO
+    pub fn update_position(&mut self) -> bool {
         // Exit if we have a 2% loss or 5% gain
         let pnl_percent = self.pnl();
 
         // println!("Position PnL: {:.2}%", pnl_percent);
 
-        if pnl_percent <= -2.0 || pnl_percent >= 5.0 {
+        if pnl_percent <= -2.0 || pnl_percent >= 0.5 {
             println!("Closing position due to PnL: {:.2}%", pnl_percent);
             self.liquidiate();
+            return true;
         }
+
+        return false;
     }
 
-    pub fn create(capital: f64, fees: f64) -> Self {
+    pub fn open_position_qty(&self) -> f64 {
+        return self.position.qty;
+    }
+
+    pub fn total_portfolio_value(&self) -> f64 {
+        let position_value = if self.has_open_position() {
+            let current_price = self.price();
+            self.position.qty * current_price
+        } else {
+            0.0
+        };
+
+        // Total = available capital + current position value
+        self.capital + position_value
+    }
+
+    pub fn build(capital: f64, fees: f64) -> Self {
         FourierStrat {
             capital,
             candles: Vec::new(),
@@ -214,4 +235,15 @@ impl FourierStrat {
     pub fn candles(&self) -> &Vec<Candle> {
         return &self.candles;
     }
+}
+
+struct StrategyDriverMessage {}
+
+struct StrategyDriver {
+    strategy: FourierStrat,
+    coms: (
+        mpsc::Sender<StrategyDriverMessage>, // sends trade data (buy sell)
+        mpsc::Receiver<StrategyDriverMessage>, // receives candle data, and state updates (capital
+                                             // etc)
+    ),
 }

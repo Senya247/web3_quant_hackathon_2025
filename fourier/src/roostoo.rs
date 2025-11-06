@@ -1,6 +1,7 @@
 use hmac::{Hmac, Mac};
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use sha2::Sha256;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -23,6 +24,9 @@ pub enum RoostooError {
 
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),
+
+    #[error("Invalid JSON: {0}")]
+    JsonParseError(String)
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +182,7 @@ pub struct PlaceOrderResponse {
     #[serde(rename = "ErrMsg")]
     pub err_msg: String,
     #[serde(rename = "OrderDetail")]
-    pub order_detail: OrderDetail,
+    pub order_detail: Option<OrderDetail>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,9 +320,10 @@ impl RoostooClient {
 
         let mut params = HashMap::new();
         params.insert("timestamp", timestamp.to_string());
-        if let Some(p) = pair {
-            params.insert("pair", p.to_string());
-        }
+        // if let Some(p) = pair {
+        //     params.insert("pair", p.to_string());
+        // }
+        params.insert("pair", pair.unwrap().to_string());
 
         let response = self.client.get(&url).query(&params).send().await?;
 
@@ -440,7 +445,6 @@ impl RoostooClient {
             .join("&");
 
         let headers = self.create_signed_headers(&param_string);
-
         let response = self
             .client
             .post(&url)
@@ -449,16 +453,48 @@ impl RoostooClient {
             .send()
             .await?;
 
-        if response.status().is_success() {
-            let order_response: PlaceOrderResponse = response.json().await?;
-            if order_response.success {
-                Ok(order_response)
-            } else {
-                Err(RoostooError::ApiError(order_response.err_msg))
+        if !response.status().is_success() {
+            return Err(RoostooError::ApiError("HTTP request failed".to_string()));
+        }
+
+        let raw_text = response.text().await?;
+        let json_value: Value = serde_json::from_str(&raw_text)
+            .map_err(|e| RoostooError::JsonParseError(format!("Invalid JSON: {}", e)))?;
+
+        // Extract basic fields
+        let success = json_value["Success"]
+            .as_bool()
+            .ok_or_else(|| RoostooError::JsonParseError("Missing 'Success' field".to_string()))?;
+
+        let err_msg = json_value["ErrMsg"].as_str().unwrap_or("").to_string();
+
+        if !success {
+            return Ok(PlaceOrderResponse {
+                success: false,
+                err_msg,
+                order_detail: None,
+            });
+        }
+
+        // Try to parse OrderDetail if present
+        let order_detail = if let Some(order_detail_value) = json_value.get("OrderDetail") {
+            match serde_json::from_value::<OrderDetail>(order_detail_value.clone()) {
+                Ok(detail) => Some(detail),
+                Err(e) => {
+                    // Log the error but don't fail the entire request
+                    eprintln!("Failed to parse OrderDetail: {}", e);
+                    None
+                }
             }
         } else {
-            Err(RoostooError::ApiError("Failed to place order".to_string()))
-        }
+            None
+        };
+
+        Ok(PlaceOrderResponse {
+            success: true,
+            err_msg,
+            order_detail,
+        })
     }
 
     /// Query order
