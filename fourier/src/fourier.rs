@@ -12,24 +12,127 @@ pub struct Candle {
     pub trade_count: i64,
 }
 
+#[derive(Debug, Default)]
+struct Position {
+    qty: f64,       // base asset quantity (BTC)
+    avg_price: f64, // quote per base (USDT per BTC)
+}
+
+impl Position {
+    const FEE_RATE: f64 = 0.001;
+
+    fn total_cost(&self) -> f64 {
+        self.qty * self.avg_price
+    }
+
+    fn buy(&mut self, q: f64, p: f64) {
+        assert!(q > 0.0, "buy quantity must be positive");
+        let notional = q * p;
+        let fee = notional * Self::FEE_RATE;
+        let new_total_cost = self.total_cost() + notional + fee;
+        self.qty += q;
+        self.avg_price = new_total_cost / self.qty;
+    }
+
+    fn sell(&mut self, s: f64, p: f64) -> f64 {
+        assert!(s > 0.0, "sell quantity must be positive");
+        assert!(s <= self.qty + 1e-12, "selling more than held");
+        let notional = s * p;
+        let fee = notional * Self::FEE_RATE;
+        let gross_realized = s * (p - self.avg_price);
+        let realized_after_fee = gross_realized - fee;
+        self.qty -= s;
+        if self.qty <= 1e-12 {
+            self.qty = 0.0;
+            self.avg_price = 0.0;
+        }
+        realized_after_fee
+    }
+
+    fn is_open(&self) -> bool {
+        self.qty > 0.0
+    }
+
+    fn unrealized_pnl(&self, mark_price: f64) -> f64 {
+        self.qty * (mark_price - self.avg_price)
+    }
+    fn liquidate_all(&mut self, price: f64) -> (f64, f64) {
+        if self.qty <= 0.0 {
+            return (0.0, 0.0);
+        }
+        let s = self.qty;
+        let notional = s * price;
+        let fee = notional * Self::FEE_RATE;
+        let gross_realized = s * (price - self.avg_price);
+        let realized_after_fee = gross_realized - fee;
+        let proceeds_after_fee = notional - fee;
+        // clear position
+        self.qty = 0.0;
+        self.avg_price = 0.0;
+        (realized_after_fee, proceeds_after_fee)
+    }
+}
+
 pub struct FourierStrat {
     capital: f64, // money
     candles: Vec<Candle>,
-    open_position: (f64, f64), // bought at, bought how much
+    position: Position, // bought at, bought how much
     fees: f64,
 }
 
 impl FourierStrat {
     pub fn should_long(&self) -> bool {
-        if self.sma(3) > self.sma(5) {
-            return true;
-            println!("SHOULD LONG");
-        };
-        return false;
+        if self.candles.len() < 10 {
+            return false;
+        }
+
+        let short_ema = self.ema(5); 
+        let long_ema = self.ema(15);
+        let momentum = self.momentum();
+
+        // println!(
+        //     "EMA(3): {:.4}, EMA(6): {:.4}, Momentum: {:.4}%",
+        //     short_ema,
+        //     long_ema,
+        //     momentum * 100.0
+        // );
+
+        short_ema > long_ema && momentum > 0.0
+    }
+
+    pub fn go_long(&mut self) {
+        let p = self.price();
+        if p == 0.0 || self.capital <= 0.0 {
+            // println!("Skipping - price: {:.2}, capital: {:.2}", p, self.capital);
+            return;
+        }
+
+        let risk_capital = self.capital * 0.1; // Use only 10%
+
+        if risk_capital < 1.0 {
+            // println!("Skipping - risk capital too small: {:.6}", risk_capital);
+            return;
+        }
+
+        let qty = risk_capital / p;
+        println!(
+            "Trading - capital: {:.2}, risk: {:.2}, price: {:.2}, qty: {:.8}",
+            self.capital, risk_capital, p, qty
+        );
+
+        if qty > 1e-12 {
+            self.buy(qty);
+        }
     }
 
     pub fn update_position(&mut self) {
-        if self.pnl().abs() <= 0.5 {
+        // Exit if we have a 2% loss or 5% gain
+        let pnl_percent = self.pnl();
+
+        // println!("Position PnL: {:.2}%", pnl_percent);
+
+        if pnl_percent <= -2.0 || pnl_percent >= 5.0 {
+            println!("Closing position due to PnL: {:.2}%", pnl_percent);
             self.liquidiate();
         }
     }
@@ -38,23 +141,33 @@ impl FourierStrat {
         FourierStrat {
             capital,
             candles: Vec::new(),
-            open_position: (0.0, 0.0),
+            position: Position {
+                qty: 0.0,
+                avg_price: 0.0,
+            },
             fees,
         }
     }
 
     pub fn pnl(&self) -> f64 {
         assert!(self.has_open_position());
-        return (self.price() - self.open_position.0) / self.open_position.0;
+        return self.position.unrealized_pnl(self.price()) / self.position.total_cost() * 100.0;
     }
 
     pub fn liquidiate(&mut self) {
-        assert!(self.has_open_position()); // only if there is an open position
-        self.sell(self.open_position.1);
+        if self.has_open_position() {
+            let price = self.price();
+            let (realized_pnl, proceeds) = self.position.liquidate_all(price);
+            self.capital += proceeds; // Make sure this line exists!
+            println!(
+                "Liquidated position. PnL: {:.2}, Capital now: {:.2}",
+                realized_pnl, self.capital
+            );
+        }
     }
 
     pub fn has_open_position(&self) -> bool {
-        return self.open_position != (0.0, 0.0);
+        return self.position.is_open();
     }
 
     fn price(&self) -> f64 {
@@ -62,18 +175,33 @@ impl FourierStrat {
     }
 
     fn buy(&mut self, qty: f64) {
-        self.capital -= qty * self.price() * (1.0 - self.fees); // FEES, also no limit orders
+        // Add safety checks
+        if qty <= 0.0 {
+            println!("ERROR: Attempted to buy non-positive quantity: {:.12}", qty);
+            return;
+        }
 
-        // self.open_position = (self.price(), );
+        let price = self.price();
+        let cost = qty * price;
+        let fee = cost * self.fees;
+        let total_cost = cost + fee;
+
+        if total_cost > self.capital {
+            println!(
+                "ERROR: Insufficient capital. Need: {:.6}, Have: {:.6}",
+                total_cost, self.capital
+            );
+            return;
+        }
+
+        self.capital -= total_cost;
+        self.position.buy(qty, price);
     }
 
     fn sell(&mut self, qty: f64) {
-        assert!(self.has_open_position());
-        assert!(qty <= self.open_position.1);
-        self.capital += qty * self.price() * (1.0 - self.fees);
-        self.holding -= qty;
-
-        self.open_position.1 -= qty;
+        let price = self.price();
+        let realized_pnl = self.position.sell(qty, price);
+        self.capital += realized_pnl; // Add back the proceeds
     }
 
     pub fn add_candle(&mut self, candle: Candle) {
@@ -81,15 +209,6 @@ impl FourierStrat {
     }
     pub fn capital(&self) -> f64 {
         return self.capital;
-    }
-
-    pub fn go_long(&mut self) {
-        let p = self.price();
-        if p == 0.0 {
-            return; // avoid division by zero / nonsensical buy
-        }
-        let qty = (self.capital / 2.0) / p;
-        self.buy(qty);
     }
 
     pub fn candles(&self) -> &Vec<Candle> {
