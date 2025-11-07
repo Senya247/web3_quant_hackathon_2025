@@ -1,14 +1,14 @@
-use crate::fourier::{Candle, FourierStrat};
+use crate::fourier::{Candle, UnusedPieceofShit};
 use anyhow::Result;
 use plotly::common::Mode;
 use plotly::{Plot, Scatter};
 
 pub struct BackTester {
-    strategy: FourierStrat,
+    strategy: UnusedPieceofShit,
 }
 
 impl BackTester {
-    pub fn create(strategy: FourierStrat) -> Self {
+    pub fn create(strategy: UnusedPieceofShit) -> Self {
         BackTester { strategy }
     }
     // take &mut self so we can call &mut methods on the strategy

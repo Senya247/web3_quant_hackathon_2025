@@ -2,6 +2,11 @@ use std::sync::mpsc;
 
 use serde::Deserialize;
 
+use crate::{
+    indicators::Indicators,
+    strategy::{Context, Order, SharedState, Strategy},
+};
+
 #[derive(Debug, Deserialize, Copy, Clone)]
 pub struct Candle {
     #[serde(rename = "datetime")]
@@ -74,18 +79,18 @@ impl Position {
     }
 }
 
-pub struct FourierStrat {
+pub struct UnusedPieceofShit {
     pub capital: f64, // money
     candles: Vec<Candle>,
     position: Position, // bought at, bought how much
     fees: f64,
 }
 
-impl FourierStrat {
+impl UnusedPieceofShit {
     pub fn should_long(&self) -> bool {
-        let short_ema = self.ema(3);
-        let long_ema = self.ema(5);
-        let momentum = self.momentum();
+        // let short_ema = self.ema(3);
+        // let long_ema = self.ema(5);
+        // let momentum = self.momentum();
 
         // println!(
         //     "EMA(3): {:.4}, EMA(6): {:.4}, Momentum: {:.4}%",
@@ -94,7 +99,8 @@ impl FourierStrat {
         //     momentum * 100.0
         // );
 
-        short_ema > long_ema && momentum > 0.0
+        // short_ema > long_ema && momentum > 0.0
+        true
     }
 
     pub fn go_long(&mut self) -> Option<f64> {
@@ -159,7 +165,7 @@ impl FourierStrat {
     }
 
     pub fn build(capital: f64, fees: f64) -> Self {
-        FourierStrat {
+        UnusedPieceofShit {
             capital,
             candles: Vec::new(),
             position: Position {
@@ -237,13 +243,20 @@ impl FourierStrat {
     }
 }
 
-struct StrategyDriverMessage {}
+pub struct Fourier {}
 
-struct StrategyDriver {
-    strategy: FourierStrat,
-    coms: (
-        mpsc::Sender<StrategyDriverMessage>, // sends trade data (buy sell)
-        mpsc::Receiver<StrategyDriverMessage>, // receives candle data, and state updates (capital
-                                             // etc)
-    ),
+impl Strategy for Fourier {
+    fn should_long(&self, ctx: &Context, shared_state: SharedState) -> bool {
+        let indicators = Indicators::new(&ctx.candles);
+        let ema20 = indicators.ema(20);
+        let ema3 = indicators.ema(3);
+
+        return ema3 > ema20; // indicators goes out of scope
+    }
+
+    fn go_long(&self, ctx: &Context, shared_state: SharedState) -> Option<Order> {
+        return None;
+    }
+    fn update_position(&self, ctx: &Context, shared_state: SharedState) {
+    }
 }
