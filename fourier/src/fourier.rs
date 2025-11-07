@@ -246,7 +246,7 @@ impl UnusedPieceofShit {
 pub struct Fourier {}
 
 impl Strategy for Fourier {
-    fn should_long(&self, ctx: &Context, shared_state: SharedState) -> bool {
+    fn should_long(&self, ctx: &Context, shared_state: &SharedState) -> bool {
         let indicators = Indicators::new(&ctx.candles);
         let ema20 = indicators.ema(20);
         let ema3 = indicators.ema(3);
@@ -254,9 +254,9 @@ impl Strategy for Fourier {
         return ema3 > ema20; // indicators goes out of scope
     }
 
-    fn go_long(&self, ctx: &Context, shared_state: SharedState) -> Option<Order> {
+    fn go_long(&self, ctx: &Context, shared_state: &SharedState) -> Option<Order> {
         return None;
     }
-    fn update_position(&self, ctx: &Context, shared_state: SharedState) {
+    fn update_position(&self, ctx: &Context, shared_state: &SharedState) {
     }
 }
