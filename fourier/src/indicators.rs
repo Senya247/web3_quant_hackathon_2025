@@ -1,4 +1,5 @@
-use crate::fourier::{Candle, UnusedPieceofShit};
+use crate::fourier::Candle;
+use num_traits::{Float, FromPrimitive};
 
 pub struct Indicators<'a> {
     candles: &'a [Candle],
@@ -15,13 +16,46 @@ impl<'a> Indicators<'a> {
         }
 
         let alpha = 2.0 / (period as f64 + 1.0);
-        let mut ema = self.candles[0].close;
+        let mut ema = self.candles[0].close; // BUG: Using oldest candle first
 
         for candle in self.candles.iter().skip(1) {
             ema = alpha * candle.close + (1.0 - alpha) * ema;
         }
 
         Some(ema)
+    }
+    pub fn ema_series<I>(&self, data: I, period: usize) -> f64
+    where
+        I: IntoIterator<Item = f64>,
+    {
+        let alpha = 2.0 / (period as f64 + 1.0);
+        let mut iter = data.into_iter();
+
+        let first_value = iter.next().unwrap();
+        let mut ema = first_value;
+
+        for value in iter {
+            ema = alpha * value + (1.0 - alpha) * ema;
+        }
+
+        ema
+    }
+
+    pub fn stddev_series<I>(&self, data: I, period: usize) -> Option<f64>
+    where
+        I: IntoIterator<Item = f64>,
+    {
+        let values: Vec<f64> = data.into_iter().collect();
+
+        if values.len() < period {
+            return None;
+        }
+
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let variance =
+            values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / values.len() as f64;
+
+        Some(variance.sqrt())
     }
 
     pub fn sma(&self, period: usize) -> Option<f64> {
@@ -70,12 +104,19 @@ impl<'a> Indicators<'a> {
 
     // Add other indicators as needed...
     pub fn atr(&self, period: usize) -> Option<f64> {
-        if self.candles.len() < period {
+        if self.candles.len() < period + 1 {
             return None;
         }
 
         let mut sum = 0.0;
-        for i in 1..period {
+        // Use most recent candles
+        let start_idx = self.candles.len().saturating_sub(period);
+
+        for i in start_idx..self.candles.len() {
+            if i == 0 {
+                continue;
+            } // Skip first candle if it's the first one
+
             let high = self.candles[i].high;
             let low = self.candles[i].low;
             let prev_close = self.candles[i - 1].close;

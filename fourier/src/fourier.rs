@@ -1,11 +1,19 @@
-use std::sync::mpsc;
-
-use serde::Deserialize;
-
 use crate::{
-    indicators::Indicators,
-    strategy::{Context, Order, SharedState, Strategy},
+    indicators::{self, Indicators},
+    roostoo::{OrderSide, OrderType},
+    strategy::{ExecContext, Order, SharedState, Strategy},
 };
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tokio::sync::Mutex;
 
 #[derive(Debug, Deserialize, Copy, Clone)]
 pub struct Candle {
@@ -19,244 +27,304 @@ pub struct Candle {
     pub trade_count: i64,
 }
 
-#[derive(Debug, Default)]
+/// Helper to get current unix epoch seconds
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Simple long-only position representation.
+/// Uses `i64` unix epoch seconds for times and `f64` for prices/quantities for simplicity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Position {
-    qty: f64,       // base asset quantity (BTC)
-    avg_price: f64, // quote per base (USDT per BTC)
+    pub symbol: String,
+    pub quantity: f64,           // base units, always >= 0.0
+    pub entry_price: f64,        // VWAP entry price in quote currency
+    pub entry_time: Option<u64>, // unix epoch seconds when position was opened (None if closed)
+    pub realized_pnl: f64,       // cumulative realized PnL in quote currency
+    pub unrealized_pnl: f64,     // last computed unrealized PnL in quote currency
+    pub avg_fee_per_unit: f64,   // average fee in quote currency per base unit
 }
 
 impl Position {
-    const FEE_RATE: f64 = 0.001;
-    fn total_cost(&self) -> f64 {
-        self.qty * self.avg_price
-    }
-
-    fn buy(&mut self, q: f64, p: f64) {
-        assert!(q > 0.0, "buy quantity must be positive");
-        let notional = q * p;
-        let fee = notional * Self::FEE_RATE;
-        let new_total_cost = self.total_cost() + notional + fee;
-        self.qty += q;
-        self.avg_price = new_total_cost / self.qty;
-    }
-
-    fn sell(&mut self, s: f64, p: f64) -> f64 {
-        assert!(s > 0.0, "sell quantity must be positive");
-        assert!(s <= self.qty + 1e-12, "selling more than held");
-        let notional = s * p;
-        let fee = notional * Self::FEE_RATE;
-        let gross_realized = s * (p - self.avg_price);
-        let realized_after_fee = gross_realized - fee;
-        self.qty -= s;
-        if self.qty <= 1e-12 {
-            self.qty = 0.0;
-            self.avg_price = 0.0;
+    /// Create an empty (closed) position for a symbol.
+    pub fn empty<S: Into<String>>(symbol: S) -> Self {
+        Position {
+            symbol: symbol.into(),
+            quantity: 0.0,
+            entry_price: 0.0,
+            entry_time: None,
+            realized_pnl: 0.0,
+            unrealized_pnl: 0.0,
+            avg_fee_per_unit: 0.0,
         }
-        realized_after_fee
+    }
+    pub fn save_to_yaml<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        let tmp = path.with_extension("yaml.tmp");
+
+        let s = serde_yaml::to_string(self).context("serialize position to YAML")?;
+        fs::write(&tmp, s).with_context(|| format!("write temp file {:?}", tmp))?;
+        fs::rename(&tmp, &path).with_context(|| format!("rename {:?} -> {:?}", tmp, path))?;
+        Ok(())
     }
 
-    fn is_open(&self) -> bool {
-        self.qty > 0.0
+    /// Load position from YAML file at `path`.
+    pub fn load_from_yaml<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let data = fs::read_to_string(path).with_context(|| format!("read file {:?}", path))?;
+        let p: Position = serde_yaml::from_str(&data).context("parse YAML into Position")?;
+        Ok(p)
+    }
+    /// Is there an open position
+    pub fn is_open(&self) -> bool {
+        self.quantity > 0.0
     }
 
-    fn unrealized_pnl(&self, mark_price: f64) -> f64 {
-        self.qty * (mark_price - self.avg_price)
+    /// Notional (quote) value at given mark price
+    pub fn notional(&self, mark_price: f64) -> f64 {
+        self.quantity * mark_price
     }
-    fn liquidate_all(&mut self, price: f64) -> (f64, f64) {
-        if self.qty <= 0.0 {
-            return (0.0, 0.0);
+
+    /// Update and return unrealized PnL using provided mark price.
+    /// unrealized_pnl = (mark - entry) * qty - fee_cost
+    pub fn update_unrealized(&mut self, mark_price: f64) -> f64 {
+        if !self.is_open() {
+            self.unrealized_pnl = 0.0;
+            return 0.0;
         }
-        let s = self.qty;
-        let notional = s * price;
-        let fee = notional * Self::FEE_RATE;
-        let gross_realized = s * (price - self.avg_price);
-        let realized_after_fee = gross_realized - fee;
-        let proceeds_after_fee = notional - fee;
-        // clear position
-        self.qty = 0.0;
-        self.avg_price = 0.0;
-        (realized_after_fee, proceeds_after_fee)
+        let gross = (mark_price - self.entry_price) * self.quantity;
+        let fee_cost = self.avg_fee_per_unit * self.quantity;
+        self.unrealized_pnl = gross - fee_cost;
+        self.unrealized_pnl
     }
-}
-
-pub struct UnusedPieceofShit {
-    pub capital: f64, // money
-    candles: Vec<Candle>,
-    position: Position, // bought at, bought how much
-    fees: f64,
-}
-
-impl UnusedPieceofShit {
-    pub fn should_long(&self) -> bool {
-        // let short_ema = self.ema(3);
-        // let long_ema = self.ema(5);
-        // let momentum = self.momentum();
-
-        // println!(
-        //     "EMA(3): {:.4}, EMA(6): {:.4}, Momentum: {:.4}%",
-        //     short_ema,
-        //     long_ema,
-        //     momentum * 100.0
-        // );
-
-        // short_ema > long_ema && momentum > 0.0
-        true
-    }
-
-    pub fn go_long(&mut self) -> Option<f64> {
-        let p = self.price();
-        if p == 0.0 || self.capital <= 0.0 {
-            // println!("Skipping - price: {:.2}, capital: {:.2}", p, self.capital);
+    pub fn unrealized_pct(&self, mark_price: f64) -> Option<f64> {
+        if !self.is_open() || self.entry_price == 0.0 {
             return None;
         }
-
-        let risk_capital = self.capital * 0.05; // Use only 10%
-
-        if risk_capital < 1.0 {
-            // println!("Skipping - risk capital too small: {:.6}", risk_capital);
-            return None;
-        }
-
-        let qty = (risk_capital / p).round();
-        println!(
-            "{} Trading - capital: {:.2}, risk: {:.2}, price: {:.2}, qty: {:.8}",
-            self.candles.last().unwrap().time,
-            self.capital,
-            risk_capital,
-            p,
-            qty
-        );
-
-        self.buy(qty);
-        println!("BUY {} BTC at {}", qty, self.price());
-        return Some(qty);
+        let pct = (mark_price - self.entry_price) / self.entry_price * 100.0;
+        Some(pct)
     }
 
-    // return whether liquidate all or not LMAO
-    pub fn update_position(&mut self) -> bool {
-        // Exit if we have a 2% loss or 5% gain
-        let pnl_percent = self.pnl();
-
-        // println!("Position PnL: {:.2}%", pnl_percent);
-
-        if pnl_percent <= -2.0 || pnl_percent >= 0.5 {
-            println!("Closing position due to PnL: {:.2}%", pnl_percent);
-            self.liquidiate();
-            return true;
-        }
-
-        return false;
-    }
-
-    pub fn open_position_qty(&self) -> f64 {
-        return self.position.qty;
-    }
-
-    pub fn total_portfolio_value(&self) -> f64 {
-        let position_value = if self.has_open_position() {
-            let current_price = self.price();
-            self.position.qty * current_price
-        } else {
-            0.0
-        };
-
-        // Total = available capital + current position value
-        self.capital + position_value
-    }
-
-    pub fn build(capital: f64, fees: f64) -> Self {
-        UnusedPieceofShit {
-            capital,
-            candles: Vec::new(),
-            position: Position {
-                qty: 0.0,
-                avg_price: 0.0,
-            },
-            fees,
-        }
-    }
-
-    pub fn pnl(&self) -> f64 {
-        assert!(self.has_open_position());
-        return self.position.unrealized_pnl(self.price()) / self.position.total_cost() * 100.0;
-    }
-
-    pub fn liquidiate(&mut self) {
-        if self.has_open_position() {
-            let price = self.price();
-            let (realized_pnl, proceeds) = self.position.liquidate_all(price);
-            self.capital += proceeds; // Make sure this line exists!
-            println!(
-                "Liquidated position. PnL: {:.2}, Capital now: {:.2}",
-                realized_pnl, self.capital
-            );
-        }
-    }
-
-    pub fn has_open_position(&self) -> bool {
-        return self.position.is_open();
-    }
-
-    fn price(&self) -> f64 {
-        return self.candles.last().unwrap().close;
-    }
-
-    fn buy(&mut self, qty: f64) {
-        // Add safety checks
+    /// Open a new long position when currently closed.
+    /// `fee` is total fee paid in quote currency for this fill.
+    pub fn open_new(
+        &mut self,
+        qty: f64,
+        price: f64,
+        fee: f64,
+        time_unix_secs: Option<u64>,
+    ) -> Result<(), &'static str> {
         if qty <= 0.0 {
-            println!("ERROR: Attempted to buy non-positive quantity: {:.12}", qty);
-            return;
+            return Err("qty must be positive");
+        }
+        if self.is_open() {
+            return Err("position already open");
         }
 
-        let price = self.price();
-        let cost = qty * price;
-        let fee = cost * self.fees;
-        let total_cost = cost + fee;
+        self.quantity = qty;
+        self.entry_price = price;
+        self.entry_time = Some(time_unix_secs.unwrap_or_else(now_unix_secs));
+        self.avg_fee_per_unit = if qty != 0.0 { fee / qty } else { 0.0 };
+        self.unrealized_pnl = 0.0;
+        Ok(())
+    }
 
-        if total_cost > self.capital {
-            println!(
-                "ERROR: Insufficient capital. Need: {:.6}, Have: {:.6}",
-                total_cost, self.capital
-            );
-            return;
+    /// Add to an existing long position (same-side add).
+    /// If closed, behaves like `open_new`.
+    pub fn add_fill(
+        &mut self,
+        qty: f64,
+        price: f64,
+        fee: f64,
+        time_unix_secs: Option<u64>,
+    ) -> Result<(), &'static str> {
+        if qty <= 0.0 {
+            return Err("qty must be positive");
         }
 
-        self.capital -= total_cost;
-        self.position.buy(qty, price);
+        if !self.is_open() {
+            return self.open_new(qty, price, fee, Some(now_unix_secs()));
+        }
+
+        // update VWAP entry price and average fee per unit
+        let total_qty = self.quantity + qty;
+        let new_vwap = (self.entry_price * self.quantity + price * qty) / total_qty;
+        let new_avg_fee = (self.avg_fee_per_unit * self.quantity + fee) / total_qty;
+
+        self.entry_price = new_vwap;
+        self.avg_fee_per_unit = new_avg_fee;
+        self.quantity = total_qty;
+        Ok(())
     }
 
-    fn sell(&mut self, qty: f64) {
-        let price = self.price();
-        let realized_pnl = self.position.sell(qty, price);
-        self.capital += realized_pnl; // Add back the proceeds
+    /// Reduce (sell) up to `qty` units at `price`. Returns realized pnl for the closed portion.
+    /// If qty >= current quantity the position is fully closed.
+    /// `fee` is the explicit fee paid for this reduction (quote currency).
+    pub fn reduce(&mut self, qty: f64, price: f64, fee: f64) -> Result<f64, &'static str> {
+        if qty <= 0.0 {
+            return Err("qty must be positive");
+        }
+        if !self.is_open() {
+            return Err("no open position to reduce");
+        }
+
+        let closed_qty = qty.min(self.quantity);
+        let gross = (price - self.entry_price) * closed_qty;
+        // approximate realized fee: proportion of avg_fee_per_unit plus explicit fee
+        let realized_fee = self.avg_fee_per_unit * closed_qty + fee;
+        let realized = gross - realized_fee;
+        self.realized_pnl += realized;
+
+        self.quantity -= closed_qty;
+
+        if self.quantity == 0.0 {
+            // reset
+            self.entry_price = 0.0;
+            self.entry_time = None;
+            self.avg_fee_per_unit = 0.0;
+            self.unrealized_pnl = 0.0;
+        }
+
+        Ok(realized)
     }
 
-    pub fn add_candle(&mut self, candle: Candle) {
-        self.candles.push(candle);
-    }
-    pub fn capital(&self) -> f64 {
-        return self.capital;
-    }
+    /// Close entire position at given price, returning realized pnl.
+    /// `fee` is explicit fee for the closing trade.
+    pub fn close_all(&mut self, price: f64, fee: f64) -> Result<f64, &'static str> {
+        if !self.is_open() {
+            return Err("no open position");
+        }
+        let qty = self.quantity;
+        let gross = (price - self.entry_price) * qty;
+        let total_fee = self.avg_fee_per_unit * qty + fee;
+        let realized = gross - total_fee;
+        self.realized_pnl += realized;
 
-    pub fn candles(&self) -> &Vec<Candle> {
-        return &self.candles;
+        // clear
+        self.quantity = 0.0;
+        self.entry_price = 0.0;
+        self.entry_time = None;
+        self.avg_fee_per_unit = 0.0;
+        self.unrealized_pnl = 0.0;
+
+        Ok(realized)
     }
 }
 
 pub struct Fourier {}
 
+#[async_trait]
 impl Strategy for Fourier {
-    fn should_long(&self, ctx: &Context, shared_state: &SharedState) -> bool {
+    async fn should_long(
+        &self,
+        ctx: &mut ExecContext,
+        shared_state: Arc<Mutex<SharedState>>,
+    ) -> bool {
+        if ctx.candles.len() <= 3600 {
+            return false;
+        };
+        if ctx.position.is_open() {
+            return false;
+        }
         let indicators = Indicators::new(&ctx.candles);
-        let ema20 = indicators.ema(20);
-        let ema3 = indicators.ema(3);
 
-        return ema3 > ema20; // indicators goes out of scope
+        let fv = indicators.ema(90).unwrap();
+        let sigma = indicators.ema_series(ctx.candles.iter().map(|candle| (candle.close - fv).abs()), 300);
+        let regime = sigma
+            / indicators
+                .stddev_series(ctx.candles.iter().map(|candle| candle.close), 3600)
+                .unwrap();
+
+        let z = (ctx.last_price - fv) / f64::max(sigma, 0.001);
+
+        let mut signal: f64 = 0.0;
+        if regime < 1.0 {
+            signal = -(0.5 * z).tanh() * (-z.abs()).exp();
+        } else {
+            signal = 0.5 * (ctx.last_price - indicators.sma(600).unwrap()).signum();
+        }
+
+        let ret: bool = (signal > 0.7 && ctx.last_signal <= 0.7);
+        ctx.last_signal = signal;
+        println!("Signal: {}", signal);
+        if ret{
+            println!("_------------------------------------_")
+        }
+
+        return ret;
     }
 
-    fn go_long(&self, ctx: &Context, shared_state: &SharedState) -> Option<Order> {
-        return None;
+    async fn go_long(
+        &self,
+        ctx: &ExecContext,
+        shared_state: Arc<Mutex<SharedState>>,
+    ) -> Option<Order> {
+        let capital: f64;
+        {
+            capital = shared_state.lock().await.capital;
+        }
+        let indicators = Indicators::new(&ctx.candles);
+
+        let price = ctx.last_price;
+        let risk_dollars = 0.005 * capital;
+        let stop_distance = 2.0 * indicators.atr(500).unwrap() * 1.5;
+
+        let mut position_usd = risk_dollars / (stop_distance / price);
+        position_usd = f64::min(position_usd, capital * 0.25);
+
+        let order = Order {
+            pair: [ctx.symbol.clone(), "/USD".to_string()].concat(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            quantity: position_usd,
+            price: None,
+        };
+        return Some(order);
     }
-    fn update_position(&self, ctx: &Context, shared_state: &SharedState) {
+
+    // #TODO more options other than just liquidate all
+    async fn update_position(
+        &self,
+        ctx: &ExecContext,
+        shared_state: Arc<Mutex<SharedState>>,
+    ) -> bool {
+        if !ctx.position.is_open() {
+            return false;
+        }
+        if ctx.candles.len() < 300 {
+            return false;
+        }
+        let indicators = Indicators::new(&ctx.candles);
+        let price = ctx.last_price;
+        let atr = indicators.atr(300).unwrap() * 1.5;
+        let fv = indicators.ema(90).unwrap();
+        let entry = ctx.position.entry_price;
+        let sigma = indicators.ema_series(
+            ctx.candles.iter().map(|candle| (candle.close - fv).abs()),
+            300,
+        );
+        let time = now_unix_secs();
+
+        if time - ctx.position.entry_time.unwrap() > 1800 {
+            return true;
+        }
+        if ctx.last_price <= entry * (1.0 - 2.0 * atr / entry) {
+            return true;
+        }
+        if price >= entry * (1.0 + 3.0 * atr / entry) {
+            return true;
+        }
+        let z = (price - fv) / sigma;
+        if z.abs() < 0.5 {
+            return true;
+        }
+        if z.abs() > 5.0 {
+            return true;
+        }
+
+        return false;
     }
 }

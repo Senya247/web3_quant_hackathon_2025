@@ -133,7 +133,7 @@ pub struct PendingCountResponse {
     pub order_pairs: HashMap<String, u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OrderDetail {
     #[serde(rename = "Pair")]
     pub pair: String,

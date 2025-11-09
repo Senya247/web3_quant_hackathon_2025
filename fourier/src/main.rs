@@ -1,20 +1,13 @@
-use fourier::strategy::{CandleData, Executioner, Strategy, TraderConfig};
-use std::collections::HashMap;
-use std::env;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
-
-use fourier::order_engine::OrderEngine;
-
 use binance::api::Binance;
 use binance::market::Market;
 use dotenv::dotenv;
-use fourier::fourier::{Candle, Fourier, UnusedPieceofShit};
-use fourier::roostoo::RoostooClient;
-use fourier::roostoo::{OrderSide, OrderType};
+use fourier::fourier::{Candle, Fourier};
+use fourier::order_engine::OrderEngine;
+use fourier::strategy::{CandleData, Executioner, Strategy, TraderConfig};
+use std::collections::HashMap;
+use std::env;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tokio::time::interval;
 
 const CRYPTOS: [&str; 1] = ["DOGE"];
 
@@ -33,14 +26,15 @@ async fn binance_task(tx: mpsc::Sender<BinancePacket>) -> () {
     loop {
         let mut handles = vec![];
 
-        for (_c, symbol) in &cryptos {
+        for (real_name, symbol) in &cryptos {
+            // make owned copies so spawn_blocking can move them into the closure
+            let real_name = real_name.to_string();
             let symbol = symbol.clone();
-            let tx = tx.clone();
 
             let handle = tokio::task::spawn_blocking(move || {
                 let market: Market = Binance::new(None, None);
                 let price = market.get_price(&symbol);
-                (symbol, price)
+                (real_name, price)
             });
             handles.push(handle);
         }
@@ -48,20 +42,20 @@ async fn binance_task(tx: mpsc::Sender<BinancePacket>) -> () {
         // Wait for all requests to complete
         for handle in handles {
             match handle.await {
-                Ok((symbol, Ok(price))) => {
+                Ok((real_name, Ok(price))) => {
                     tx.send(BinancePacket {
                         time: SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
                             .as_secs(),
-                        symbol: symbol.clone(),
+                        symbol: real_name.clone(),
                         price: price.price,
                     })
                     .await
                     .unwrap();
                 }
-                Ok((symbol, Err(e))) => {
-                    println!("Error fetching price for {}: {}", symbol, e);
+                Ok((real_name, Err(e))) => {
+                    println!("Error fetching price for {}: {}", real_name, e);
                 }
                 Err(e) => {
                     println!("Task error: {}", e);
@@ -69,26 +63,19 @@ async fn binance_task(tx: mpsc::Sender<BinancePacket>) -> () {
             }
         }
 
-        // Optional: add a small delay between iterations to avoid rate limiting
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
 }
 
-struct Order {
-    pair: String,
-    side: OrderSide,
-    order_type: OrderType,
-    quantity: f64,
-    price: Option<f64>,
-}
-
 // trader task to trade one symbol.receiver for time/prices as they are generated
-async fn trader<T: Strategy+Send>(config: TraderConfig<T>) {
+async fn trader<T: Strategy + Send>(config: TraderConfig<T>) {
+    println!("IN TRADER");
     let mut executioner = Executioner::new(config);
-    executioner.run();
+    executioner.add_symbol("DOGE".to_string(), 0);
+    executioner.run(false).await;
 }
 
-async fn trading_task<T: Strategy+Send + 'static>(
+async fn trading_task<T: Strategy + Send + 'static + std::marker::Sync>(
     mut bt_rx: mpsc::Receiver<BinancePacket>,
     initial_capital: f64,
     api_key: String,
@@ -112,12 +99,12 @@ async fn trading_task<T: Strategy+Send + 'static>(
 
     let _order_engine = tokio::spawn(async move {
         let mut engine = OrderEngine::build(api_key, api_secret);
-        engine.run(oe_rx);
+        engine.run(oe_rx).await;
     });
 
     while let Some(bin_packet) = bt_rx.recv().await {
         let candledata = CandleData {
-            symbol: bin_packet.symbol,
+            symbol: bin_packet.symbol.clone(),
             candle: Candle {
                 time: bin_packet.time,
                 open: 0.0,
@@ -134,7 +121,7 @@ async fn trading_task<T: Strategy+Send + 'static>(
 }
 //
 
-const INIT_CAPITAL: f64 = 5000.0;
+const INIT_CAPITAL: f64 = 49728.16;
 
 #[tokio::main]
 async fn main() {
