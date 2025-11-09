@@ -1,5 +1,4 @@
 use crate::fourier::Candle;
-use num_traits::{Float, FromPrimitive};
 
 pub struct Indicators<'a> {
     candles: &'a [Candle],

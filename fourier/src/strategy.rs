@@ -18,16 +18,16 @@ pub struct ExecContext {
     pub candles: Vec<Candle>,
     pub position: Position,
 
-    pub last_price: f64,
+    pub last_close: f64,
     pub last_signal: f64,
     pub precision: u64,
 }
 
 impl ExecContext {
     fn update(&mut self, candle: Candle) {
-        self.last_price = candle.close;
+        self.last_close = candle.close;
         self.candles.push(candle);
-        self.position.update_unrealized(self.last_price);
+        self.position.update_unrealized(self.last_close);
     }
 }
 
@@ -104,17 +104,17 @@ impl<T: Strategy + Send> Executioner<T> {
     }
 
     pub fn add_symbol(&mut self, symbol: String, precision: u64) {
-        self.cryptos.insert(
-            symbol.clone(),
-            ExecContext {
-                symbol: symbol.clone(),
-                candles: Vec::new(),
-                position: Position::empty(symbol),
-                last_price: 0.0,
-                last_signal: 0.0,
-                precision: precision,
-            },
-        );
+        let v: Vec<Candle> = Vec::new();
+        let exectx = ExecContext {
+            symbol: symbol.clone(),
+            candles: v,
+            position: Position::empty(symbol.clone()),
+            last_close: 0.0,
+            last_signal: 0.0,
+            precision: precision,
+        };
+
+        self.cryptos.insert(symbol.clone(), exectx);
     }
 
     pub async fn run(&mut self, backtesting: bool) {
@@ -137,7 +137,7 @@ impl<T: Strategy + Send> Executioner<T> {
             println!(
                 "Capital: {} Holding: {}",
                 capital,
-                ctx.position.quantity * ctx.last_price,
+                ctx.position.quantity * ctx.last_close,
             );
 
             // just liquidated position for this ctx
@@ -148,10 +148,10 @@ impl<T: Strategy + Send> Executioner<T> {
                     .await
             {
                 if backtesting {
-                    let price = ctx.last_price;
+                    let price = ctx.last_close;
                     let qty = ctx.position.quantity;
                     let fees = 0.001 * price * qty;
-                    ctx.position.close_all(price, fees);
+                    let _ = ctx.position.close_all(price, fees);
                     {
                         let mut guard = self.shared_state.lock().await;
                         guard.capital += qty * price - fees;
@@ -199,7 +199,7 @@ impl<T: Strategy + Send> Executioner<T> {
                 if let Some(order) = self.strategy.go_long(&ctx, self.shared_state.clone()).await {
                     if backtesting {
                         let qty = order.quantity;
-                        let price = ctx.last_price;
+                        let price = ctx.last_close;
                         let fee = qty * price * 0.001;
                         ctx.position.add_fill(qty, price, fee, None);
                         {

@@ -1,5 +1,6 @@
 use binance::api::Binance;
 use binance::market::Market;
+use binance::model::KlineSummaries;
 use dotenv::dotenv;
 use fourier::fourier::{Candle, Fourier};
 use fourier::order_engine::OrderEngine;
@@ -11,13 +12,7 @@ use tokio::sync::mpsc;
 
 const CRYPTOS: [&str; 1] = ["DOGE"];
 
-struct BinancePacket {
-    symbol: String,
-    time: u64,
-    price: f64,
-}
-
-async fn binance_task(tx: mpsc::Sender<BinancePacket>) -> () {
+async fn binance_task(tx: mpsc::Sender<CandleData>) -> () {
     let mut cryptos = HashMap::new();
     for crypto in CRYPTOS {
         cryptos.insert(crypto, [crypto, "USDT"].concat());
@@ -33,8 +28,8 @@ async fn binance_task(tx: mpsc::Sender<BinancePacket>) -> () {
 
             let handle = tokio::task::spawn_blocking(move || {
                 let market: Market = Binance::new(None, None);
-                let price = market.get_price(&symbol);
-                (real_name, price)
+                let candle = market.get_klines(&symbol, "1s", 1, None, None);
+                (real_name, candle)
             });
             handles.push(handle);
         }
@@ -42,17 +37,42 @@ async fn binance_task(tx: mpsc::Sender<BinancePacket>) -> () {
         // Wait for all requests to complete
         for handle in handles {
             match handle.await {
-                Ok((real_name, Ok(price))) => {
-                    tx.send(BinancePacket {
-                        time: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
-                        symbol: real_name.clone(),
-                        price: price.price,
-                    })
-                    .await
-                    .unwrap();
+                Ok((real_name, Ok(_candle))) => {
+                    let kline = match _candle {
+                        KlineSummaries::AllKlineSummaries(mut v) => v.remove(0),
+                        _ => {
+                            panic!("WHA THEE FUCKK")
+                        }
+                    };
+
+                    let open = kline.open.parse();
+                    let high = kline.high.parse();
+                    let low = kline.low.parse();
+                    let close = kline.close.parse();
+                    let volume = kline.volume.parse();
+
+                    match (open, high, low, close, volume) {
+                        (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume)) => {
+                            tx.send(CandleData {
+                                symbol: real_name,
+                                candle: Candle {
+                                    open_time: kline.open_time as u64,
+                                    close_time: kline.close_time as u64,
+                                    open: open,
+                                    high: high,
+                                    low: low,
+                                    close: close,
+                                    volume: volume,
+                                    trade_count: kline.number_of_trades,
+                                },
+                            })
+                            .await
+                            .unwrap();
+                        }
+                        (_, _, _, _, _) => {
+                            println!("[ERROR][BINANCE] Unable to parse data");
+                        }
+                    };
                 }
                 Ok((real_name, Err(e))) => {
                     println!("Error fetching price for {}: {}", real_name, e);
@@ -76,7 +96,7 @@ async fn trader<T: Strategy + Send>(config: TraderConfig<T>) {
 }
 
 async fn trading_task<T: Strategy + Send + 'static + std::marker::Sync>(
-    mut bt_rx: mpsc::Receiver<BinancePacket>,
+    mut bt_rx: mpsc::Receiver<CandleData>,
     initial_capital: f64,
     api_key: String,
     api_secret: String,
@@ -102,20 +122,7 @@ async fn trading_task<T: Strategy + Send + 'static + std::marker::Sync>(
         engine.run(oe_rx).await;
     });
 
-    while let Some(bin_packet) = bt_rx.recv().await {
-        let candledata = CandleData {
-            symbol: bin_packet.symbol.clone(),
-            candle: Candle {
-                time: bin_packet.time,
-                open: 0.0,
-                high: 0.0,
-                low: 0.0,
-                close: bin_packet.price,
-                volume: 0.0,
-                trade_count: 0,
-            },
-        };
-
+    while let Some(candledata) = bt_rx.recv().await {
         let _ = candle_tx.send(candledata).await;
     }
 }

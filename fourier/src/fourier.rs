@@ -1,5 +1,5 @@
 use crate::{
-    indicators::{self, Indicators},
+    indicators::Indicators,
     roostoo::{OrderSide, OrderType},
     strategy::{ExecContext, Order, SharedState, Strategy},
 };
@@ -15,10 +15,11 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-#[derive(Debug, Deserialize, Copy, Clone)]
+#[derive(Debug, Deserialize, Copy, Clone, Default)]
 pub struct Candle {
     #[serde(rename = "datetime")]
-    pub time: u64,
+    pub open_time: u64,
+    pub close_time: u64,
     pub open: f64,
     pub high: f64,
     pub low: f64,
@@ -232,25 +233,28 @@ impl Strategy for Fourier {
         let indicators = Indicators::new(&ctx.candles);
 
         let fv = indicators.ema(90).unwrap();
-        let sigma = indicators.ema_series(ctx.candles.iter().map(|candle| (candle.close - fv).abs()), 300);
+        let sigma = indicators.ema_series(
+            ctx.candles.iter().map(|candle| (candle.close - fv).abs()),
+            300,
+        );
         let regime = sigma
             / indicators
                 .stddev_series(ctx.candles.iter().map(|candle| candle.close), 3600)
                 .unwrap();
 
-        let z = (ctx.last_price - fv) / f64::max(sigma, 0.001);
+        let z = (ctx.last_close - fv) / f64::max(sigma, 0.001);
 
         let mut signal: f64 = 0.0;
         if regime < 1.0 {
             signal = -(0.5 * z).tanh() * (-z.abs()).exp();
         } else {
-            signal = 0.5 * (ctx.last_price - indicators.sma(600).unwrap()).signum();
+            signal = 0.5 * (ctx.last_close - indicators.sma(600).unwrap()).signum();
         }
 
         let ret: bool = (signal > 0.7 && ctx.last_signal <= 0.7);
         ctx.last_signal = signal;
         println!("Signal: {}", signal);
-        if ret{
+        if ret {
             println!("_------------------------------------_")
         }
 
@@ -268,7 +272,7 @@ impl Strategy for Fourier {
         }
         let indicators = Indicators::new(&ctx.candles);
 
-        let price = ctx.last_price;
+        let price = ctx.last_close;
         let risk_dollars = 0.005 * capital;
         let stop_distance = 2.0 * indicators.atr(500).unwrap() * 1.5;
 
@@ -298,7 +302,7 @@ impl Strategy for Fourier {
             return false;
         }
         let indicators = Indicators::new(&ctx.candles);
-        let price = ctx.last_price;
+        let price = ctx.last_close;
         let atr = indicators.atr(300).unwrap() * 1.5;
         let fv = indicators.ema(90).unwrap();
         let entry = ctx.position.entry_price;
@@ -311,7 +315,7 @@ impl Strategy for Fourier {
         if time - ctx.position.entry_time.unwrap() > 1800 {
             return true;
         }
-        if ctx.last_price <= entry * (1.0 - 2.0 * atr / entry) {
+        if ctx.last_close <= entry * (1.0 - 2.0 * atr / entry) {
             return true;
         }
         if price >= entry * (1.0 + 3.0 * atr / entry) {
