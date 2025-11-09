@@ -10,43 +10,98 @@ SECRET_KEY = "FerUSsHuulHOB3b6e6HhCeSy6xXmYMKjh1b9Kj0U4HFiz3uTr4kuqALHmFQXrbgB"
 
 
 def _get_timestamp():
-    """Returns a 13-digit millisecond timestamp as a string."""
+    """Return a 13-digit millisecond timestamp as string."""
     return str(int(time.time() * 1000))
 
 
-def _get_signed_headers(payload={}):
+def _get_signed_headers(payload: dict = {}):
     """
-    Creates a signature for a given payload (dict) and returns
-    the correct headers for a SIGNED (RCL_TopLevelCheck) request.
+    Generate signed headers and totalParams for RCL_TopLevelCheck endpoints.
     """
-    # 1. Add timestamp to the payload
     payload["timestamp"] = _get_timestamp()
-
-    # 2. Sort keys and create the totalParams string
     sorted_keys = sorted(payload.keys())
-    total_params = "&".join(f"{key}={payload[key]}" for key in sorted_keys)
+    total_params = "&".join(f"{k}={payload[k]}" for k in sorted_keys)
 
-    # 3. Create HMAC-SHA256 signature
     signature = hmac.new(
         SECRET_KEY.encode("utf-8"), total_params.encode("utf-8"), hashlib.sha256
     ).hexdigest()
 
-    # 4. Create headers
     headers = {"RST-API-KEY": API_KEY, "MSG-SIGNATURE": signature}
 
     return headers, payload, total_params
 
 
-def get_pending_count():
-    """Gets pending order count. (Auth: RCL_TopLevelCheck)"""
-    url = f"{BASE_URL}/v3/pending_count"
+# ------------------------------
+# Public Endpoints
+# ------------------------------
 
-    headers, payload, total_params_string = _get_signed_headers(payload={})
 
+def check_server_time():
+    """Check API server time."""
+    url = f"{BASE_URL}/v3/serverTime"
     try:
-        response = requests.get(url, headers=headers, params=payload)
-        response.raise_for_status()
-        return response.json()
+        res = requests.get(url)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error checking server time: {e}")
+        return None
+
+
+def get_exchange_info():
+    """Get exchange trading pairs and info."""
+    url = f"{BASE_URL}/v3/exchangeInfo"
+    try:
+        res = requests.get(url)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error getting exchange info: {e}")
+        return None
+
+
+def get_ticker(pair=None):
+    """Get ticker for one or all pairs."""
+    url = f"{BASE_URL}/v3/ticker"
+    params = {"timestamp": _get_timestamp()}
+    if pair:
+        params["pair"] = pair
+    try:
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error getting ticker: {e}")
+        return None
+
+
+# ------------------------------
+# Signed Endpoints
+# ------------------------------
+
+
+def get_balance():
+    """Get wallet balances (RCL_TopLevelCheck)."""
+    url = f"{BASE_URL}/v3/balance"
+    headers, payload, _ = _get_signed_headers({})
+    try:
+        res = requests.get(url, headers=headers, params=payload)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error getting balance: {e}")
+        print(f"Response text: {e.response.text if e.response else 'N/A'}")
+        return None
+
+
+def get_pending_count():
+    """Get total pending order count."""
+    url = f"{BASE_URL}/v3/pending_count"
+    headers, payload, _ = _get_signed_headers({})
+    try:
+        res = requests.get(url, headers=headers, params=payload)
+        res.raise_for_status()
+        return res.json()
     except requests.exceptions.RequestException as e:
         print(f"Error getting pending count: {e}")
         print(f"Response text: {e.response.text if e.response else 'N/A'}")
@@ -89,4 +144,63 @@ def place_order(pair_or_coin, side, quantity, price=None, order_type=None):
         return None
 
 
-print(place_order("DOGE/USD", "buy", 7))
+def query_order(order_id=None, pair=None, pending_only=None):
+    """Query order history or pending orders."""
+    url = f"{BASE_URL}/v3/query_order"
+    payload = {}
+    if order_id:
+        payload["order_id"] = str(order_id)
+    elif pair:
+        payload["pair"] = pair
+        if pending_only is not None:
+            payload["pending_only"] = "TRUE" if pending_only else "FALSE"
+
+    headers, _, total_params = _get_signed_headers(payload)
+    headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+    try:
+        res = requests.post(url, headers=headers, data=total_params)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error querying order: {e}")
+        print(f"Response text: {e.response.text if e.response else 'N/A'}")
+        return None
+
+
+def cancel_order(order_id=None, pair=None):
+    """Cancel specific or all pending orders."""
+    url = f"{BASE_URL}/v3/cancel_order"
+    payload = {}
+    if order_id:
+        payload["order_id"] = str(order_id)
+    elif pair:
+        payload["pair"] = pair
+
+    headers, _, total_params = _get_signed_headers(payload)
+    headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+    try:
+        res = requests.post(url, headers=headers, data=total_params)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error canceling order: {e}")
+        print(f"Response text: {e.response.text if e.response else 'N/A'}")
+        return None
+
+
+# ------------------------------
+# Quick Demo Section
+# ------------------------------
+if __name__ == "__main__":
+
+    wallet = get_balance()
+    qty = float(wallet["SpotWallet"]["DOGE"]["Free"])
+    print(place_order("DOGE/USD", "SELL", qty))
+    while 1:
+        print(get_balance())
+        time.sleep(10)
+    # print(get_exchange_info())
+    # print(get_balance())
+    # print(place_order("DOGE/USD", "SELL", 72508))
