@@ -264,34 +264,18 @@ impl Strategy for Fourier {
         if ctx.candles.len() < 300 {
             return false;
         }
-        let indicators = Indicators::new(&ctx.candles);
-        let price = ctx.last_close;
-        let atr = indicators.atr(300).unwrap() * 1.5;
-        let fv = indicators.ema(90).unwrap();
-        let entry = ctx.position.entry_price;
-        let sigma = indicators.ema_series(
-            ctx.candles.iter().map(|candle| (candle.close - fv).abs()),
-            300,
-        );
-        let time = now_unix_secs();
 
-        if time - ctx.position.entry_time.unwrap() > 1800 {
-            return true;
-        }
-        if ctx.last_close <= entry * (1.0 - 2.0 * atr / entry) {
-            return true;
-        }
-        if price >= entry * (1.0 + 3.0 * atr / entry) {
-            return true;
-        }
-        let z = (price - fv) / sigma;
-        if z.abs() < 0.5 {
-            return true;
-        }
-        if z.abs() > 5.0 {
-            return true;
-        }
-
-        return false;
+        let pct = ctx.position.unrealized_pct(ctx.last_close);
+        match pct {
+            Some(p) => {
+                if p > 0.5 || p < -1.0 {
+                    return true;
+                }
+                return false;
+            }
+            None => {
+                return false;
+            }
+        };
     }
 }
