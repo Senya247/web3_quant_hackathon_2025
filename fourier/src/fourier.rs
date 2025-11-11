@@ -248,7 +248,6 @@ impl Strategy for Fourier {
             quantity: qty,
             price: None,
         };
-        println!("BUY {} {}@{}", ctx.symbol.clone(), qty, ctx.last_close);
 
         return Some(order);
     }

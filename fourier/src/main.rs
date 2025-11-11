@@ -94,21 +94,21 @@ async fn binance_task(tx: mpsc::Sender<CandleData>) -> () {
 async fn trader<T: Strategy + Send>(config: TraderConfig<T>) {
     println!("IN TRADER");
     let mut executioner = Executioner::new(config);
-    executioner.add_symbol("BTC/USD".to_string(), 5);
-    executioner.add_symbol("ETH/USD".to_string(), 4);
-    executioner.add_symbol("SOL/USD".to_string(), 3);
-    executioner.add_symbol("BNB/USD".to_string(), 3);
-    executioner.add_symbol("DOGE/USD".to_string(), 0);
-    executioner.add_symbol("ICP/USD".to_string(), 2);
-    executioner.add_symbol("XRP/USD".to_string(), 1);
-    executioner.add_symbol("AAVE/USD".to_string(), 3);
-    executioner.add_symbol("UNI/USD".to_string(), 2);
-    executioner.add_symbol("XLM/USD".to_string(), 0);
-    executioner.add_symbol("SUI/USD".to_string(), 1);
-    executioner.add_symbol("BONK/USD".to_string(), 0);
-    executioner.add_symbol("FIL/USD".to_string(), 2);
-    executioner.add_symbol("TRX/USD".to_string(), 1);
-    executioner.add_symbol("WIF/USD".to_string(), 2);
+    executioner.add_symbol("BTC".to_string(), 5);
+    executioner.add_symbol("ETH".to_string(), 4);
+    executioner.add_symbol("SOL".to_string(), 3);
+    executioner.add_symbol("BNB".to_string(), 3);
+    executioner.add_symbol("DOGE".to_string(), 0);
+    executioner.add_symbol("ICP".to_string(), 2);
+    executioner.add_symbol("XRP".to_string(), 1);
+    executioner.add_symbol("AAVE".to_string(), 3);
+    executioner.add_symbol("UNI".to_string(), 2);
+    executioner.add_symbol("XLM".to_string(), 0);
+    executioner.add_symbol("SUI".to_string(), 1);
+    executioner.add_symbol("BONK".to_string(), 0);
+    executioner.add_symbol("FIL".to_string(), 2);
+    executioner.add_symbol("TRX".to_string(), 1);
+    executioner.add_symbol("WIF".to_string(), 2);
 
     executioner.run(false).await;
 }
@@ -146,7 +146,7 @@ async fn trading_task<T: Strategy + Send + 'static + std::marker::Sync>(
 }
 //
 
-const INIT_CAPITAL: f64 = 50_000.0;
+const INIT_CAPITAL: f64 = 49728.16;
 
 #[tokio::main]
 async fn main() {
