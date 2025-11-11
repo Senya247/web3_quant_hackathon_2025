@@ -2,5 +2,5 @@ fourier/.env
 fourier/target
 historical/*
 !historical/readme.txt
-fourier/src/test.py
+fourier/test.py
 fourier/cache

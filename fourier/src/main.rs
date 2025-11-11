@@ -146,7 +146,7 @@ async fn trading_task<T: Strategy + Send + 'static + std::marker::Sync>(
 }
 //
 
-const INIT_CAPITAL: f64 = 49728.16;
+const INIT_CAPITAL: f64 = 50_005.91;
 
 #[tokio::main]
 async fn main() {

@@ -122,7 +122,6 @@ impl<T: Strategy + Send> Executioner<T> {
     pub async fn run(&mut self, backtesting: bool) {
         let mut index: usize = 0;
         while let Some(candle_message) = self.candle_input.recv().await {
-            println!("CANDLE");
             let l = self.cryptos.len();
             let mut ctx = match self.cryptos.remove(&candle_message.symbol) {
                 None => continue,

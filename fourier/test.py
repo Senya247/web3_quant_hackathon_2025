@@ -5,8 +5,8 @@ import hashlib
 
 
 BASE_URL = "https://mock-api.roostoo.com"
-API_KEY = "bmpkW4mdv3ph7q3I9lHAsDCknhrn4nemJI9e50F0iluZkLBqGznQB8y9TWHQCFcK"
-SECRET_KEY = "FerUSsHuulHOB3b6e6HhCeSy6xXmYMKjh1b9Kj0U4HFiz3uTr4kuqALHmFQXrbgB"
+API_KEY = "fQGiey9uIS1A2ocjqVt9bxh73mduu4xoREiaHcVsjoWtFQMcS7GAAVzEz2k7nFmc"
+SECRET_KEY = "yxmU4w0RIs31D1okQxucsVGSmpRX85i0hy9rDcQkRsGGEzbnAaPs8emWUt6gTJyn"
 
 
 def _get_timestamp():
@@ -194,13 +194,22 @@ def cancel_order(order_id=None, pair=None):
 # Quick Demo Section
 # ------------------------------
 if __name__ == "__main__":
-
+    # print(get_exchange_info())
+    # wallet = get_balance()
+    # for i in wallet["SpotWallet"]:
+    #     print(wallet["SpotWallet"][i])
+    #     print(place_order(f"{i}/USD", "SELL", wallet["SpotWallet"][i]['Free']))
     wallet = get_balance()
-    qty = float(wallet["SpotWallet"]["DOGE"]["Free"])
-    print(place_order("DOGE/USD", "SELL", qty))
-    while 1:
-        print(get_balance())
-        time.sleep(10)
+    print(get_balance())
+    # qtyx = float(wallet["SpotWallet"]["XRP"]["Free"])
+    # qtyf = float(wallet["SpotWallet"]["FIL"]["Free"])
+    # qtyb = float(wallet["SpotWallet"]["BONK"]["Free"])
+    # print(place_order("XRP/USD", "SELL", qtyx))
+    # print(place_order("FIL/USD", "SELL", qtyf))
+    # print(place_order("BONK/USD", "SELL", qtyb))
+    # while 1:
+    #     print(get_balance())
+    #     time.sleep(10)
     # print(get_exchange_info())
     # print(get_balance())
     # print(place_order("DOGE/USD", "SELL", 72508))
