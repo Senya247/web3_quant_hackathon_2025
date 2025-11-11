@@ -10,7 +10,10 @@ use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
-const CRYPTOS: [&str; 1] = ["DOGE"];
+const CRYPTOS: [&str; 15] = [
+    "BTC", "ETH", "SOL", "BNB", "DOGE", "ICP", "XRP", "AAVE", "UNI", "XLM", "SUI", "BONK", "FIL",
+    "TRX", "WIF",
+];
 
 async fn binance_task(tx: mpsc::Sender<CandleData>) -> () {
     let mut cryptos = HashMap::new();
@@ -68,6 +71,8 @@ async fn binance_task(tx: mpsc::Sender<CandleData>) -> () {
                             })
                             .await
                             .unwrap();
+
+                            tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
                         }
                         (_, _, _, _, _) => {
                             println!("[ERROR][BINANCE] Unable to parse data");
@@ -82,8 +87,6 @@ async fn binance_task(tx: mpsc::Sender<CandleData>) -> () {
                 }
             }
         }
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
 }
 
@@ -91,7 +94,22 @@ async fn binance_task(tx: mpsc::Sender<CandleData>) -> () {
 async fn trader<T: Strategy + Send>(config: TraderConfig<T>) {
     println!("IN TRADER");
     let mut executioner = Executioner::new(config);
+    executioner.add_symbol("BTC".to_string(), 5);
+    executioner.add_symbol("ETH".to_string(), 4);
+    executioner.add_symbol("SOL".to_string(), 3);
+    executioner.add_symbol("BNB".to_string(), 3);
     executioner.add_symbol("DOGE".to_string(), 0);
+    executioner.add_symbol("ICP".to_string(), 2);
+    executioner.add_symbol("XRP".to_string(), 1);
+    executioner.add_symbol("AAVE".to_string(), 3);
+    executioner.add_symbol("UNI".to_string(), 2);
+    executioner.add_symbol("XLM".to_string(), 0);
+    executioner.add_symbol("SUI".to_string(), 1);
+    executioner.add_symbol("BONK".to_string(), 0);
+    executioner.add_symbol("FIL".to_string(), 2);
+    executioner.add_symbol("TRX".to_string(), 1);
+    executioner.add_symbol("WIF".to_string(), 2);
+
     executioner.run(false).await;
 }
 

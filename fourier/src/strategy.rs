@@ -67,6 +67,7 @@ pub struct CandleData {
 // This is for hared state of ALL crypto traders
 pub struct SharedState {
     pub capital: f64,
+    pub streak: u64,
 }
 
 pub struct Executioner<T: Strategy + Send> {
@@ -95,6 +96,7 @@ impl<T: Strategy + Send> Executioner<T> {
             cryptos: HashMap::new(),
             shared_state: Arc::new(Mutex::new(SharedState {
                 capital: config.initial_capital,
+                streak: 0,
             })),
             strategy: config.strategy,
             order_engine: config.order_engine_tx,
@@ -135,7 +137,8 @@ impl<T: Strategy + Send> Executioner<T> {
                 capital = guard.capital;
             }
             println!(
-                "Capital: {} Holding: {}",
+                "[{}] Capital: {} Holding: {}",
+                ctx.symbol,
                 capital,
                 ctx.position.quantity * ctx.last_close,
             );

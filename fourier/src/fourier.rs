@@ -224,41 +224,7 @@ impl Strategy for Fourier {
         ctx: &mut ExecContext,
         shared_state: Arc<Mutex<SharedState>>,
     ) -> bool {
-        if ctx.candles.len() <= 3600 {
-            return false;
-        };
-        if ctx.position.is_open() {
-            return false;
-        }
-        let indicators = Indicators::new(&ctx.candles);
-
-        let fv = indicators.ema(90).unwrap();
-        let sigma = indicators.ema_series(
-            ctx.candles.iter().map(|candle| (candle.close - fv).abs()),
-            300,
-        );
-        let regime = sigma
-            / indicators
-                .stddev_series(ctx.candles.iter().map(|candle| candle.close), 3600)
-                .unwrap();
-
-        let z = (ctx.last_close - fv) / f64::max(sigma, 0.001);
-
-        let mut signal: f64 = 0.0;
-        if regime < 1.0 {
-            signal = -(0.5 * z).tanh() * (-z.abs()).exp();
-        } else {
-            signal = 0.5 * (ctx.last_close - indicators.sma(600).unwrap()).signum();
-        }
-
-        let ret: bool = (signal > 0.7 && ctx.last_signal <= 0.7);
-        ctx.last_signal = signal;
-        println!("Signal: {}", signal);
-        if ret {
-            println!("_------------------------------------_")
-        }
-
-        return ret;
+        return true;
     }
 
     async fn go_long(
@@ -266,26 +232,23 @@ impl Strategy for Fourier {
         ctx: &ExecContext,
         shared_state: Arc<Mutex<SharedState>>,
     ) -> Option<Order> {
+        let streak: f64;
         let capital: f64;
         {
-            capital = shared_state.lock().await.capital;
+            let guard = shared_state.lock().await;
+            streak = guard.streak as f64;
+            capital = guard.capital;
         }
-        let indicators = Indicators::new(&ctx.candles);
+        let qty: f64 = 0.05 * capital / ctx.last_close * (streak * -0.5).exp();
 
-        let price = ctx.last_close;
-        let risk_dollars = 0.005 * capital;
-        let stop_distance = 2.0 * indicators.atr(500).unwrap() * 1.5;
-
-        let mut position_usd = risk_dollars / (stop_distance / price);
-        position_usd = f64::min(position_usd, capital * 0.25);
-
-        let order = Order {
-            pair: [ctx.symbol.clone(), "/USD".to_string()].concat(),
+        let order: Order = Order {
+            pair: ctx.symbol.clone(),
             side: OrderSide::Buy,
             order_type: OrderType::Market,
-            quantity: position_usd,
+            quantity: qty,
             price: None,
         };
+
         return Some(order);
     }
 
