@@ -242,7 +242,7 @@ impl Strategy for Fourier {
         let qty: f64 = 0.05 * capital / ctx.last_close * (streak * -0.5).exp();
 
         let order: Order = Order {
-            pair: ctx.symbol.clone(),
+            pair: [ctx.symbol.clone(), "/USD".to_string()].concat(),
             side: OrderSide::Buy,
             order_type: OrderType::Market,
             quantity: qty,
