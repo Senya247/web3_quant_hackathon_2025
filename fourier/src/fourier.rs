@@ -248,6 +248,7 @@ impl Strategy for Fourier {
             quantity: qty,
             price: None,
         };
+        println!("BUY {} {}@{}", ctx.symbol.clone(), qty, ctx.last_close);
 
         return Some(order);
     }
@@ -258,10 +259,7 @@ impl Strategy for Fourier {
         ctx: &ExecContext,
         shared_state: Arc<Mutex<SharedState>>,
     ) -> bool {
-        if !ctx.position.is_open() {
-            return false;
-        }
-        if ctx.candles.len() < 300 {
+        if !ctx.position.is_open() { // wha tthe fuck happened?
             return false;
         }
 
