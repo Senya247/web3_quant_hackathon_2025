@@ -4,6 +4,7 @@ use binance::model::KlineSummaries;
 use dotenv::dotenv;
 use fourier::fourier::{Candle, Fourier};
 use fourier::order_engine::OrderEngine;
+use fourier::roostoo::RoostooClient;
 use fourier::strategy::{CandleData, Executioner, Strategy, TraderConfig};
 use std::collections::HashMap;
 use std::env;
@@ -107,13 +108,16 @@ async fn trading_task<T: Strategy + Send + 'static + std::marker::Sync>(
 ) -> () {
     let (candle_tx, candle_rx) = mpsc::channel(32);
     let (oe_tx, oe_rx) = mpsc::channel(32);
+    let (starting_capital, initial_positions) =
+        fetch_account_state(&api_key, &api_secret, initial_capital).await;
     let config = TraderConfig {
-        initial_capital: initial_capital,
+        initial_capital: starting_capital,
         strategy: strategy,
         candle_data_rx: candle_rx,
         order_engine_tx: oe_tx,
         api_key: api_key.clone(),
         api_secret: api_secret.clone(),
+        initial_positions,
     };
 
     let trader_handle = tokio::spawn(async move {
@@ -182,5 +186,38 @@ fn default_precision(symbol: &str) -> u64 {
         "TRX" => 1,
         "WIF" => 2,
         _ => 2,
+    }
+}
+
+async fn fetch_account_state(
+    api_key: &str,
+    api_secret: &str,
+    fallback_capital: f64,
+) -> (f64, HashMap<String, f64>) {
+    let client = RoostooClient::new(api_key.to_string(), api_secret.to_string());
+    match client.get_balance().await {
+        Ok(balance) => {
+            let capital = balance
+                .spot_wallet
+                .get("USD")
+                .map(|info| info.free)
+                .unwrap_or(fallback_capital);
+            let mut positions = HashMap::new();
+            for symbol in CRYPTOS {
+                if let Some(info) = balance.spot_wallet.get(symbol) {
+                    if info.free > 0.0 {
+                        positions.insert(symbol.to_string(), info.free);
+                    }
+                }
+            }
+            (capital, positions)
+        }
+        Err(e) => {
+            println!(
+                "[WARN][BOOTSTRAP] Unable to fetch remote balance, using fallback: {}",
+                e
+            );
+            (fallback_capital, HashMap::new())
+        }
     }
 }

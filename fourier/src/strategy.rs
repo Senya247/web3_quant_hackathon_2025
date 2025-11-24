@@ -83,6 +83,7 @@ pub struct Executioner<T: Strategy + Send> {
     order_engine: mpsc::Sender<OrderWithResponse>,
     candle_input: mpsc::Receiver<CandleData>,
     client: RoostooClient,
+    bootstrap_positions: HashMap<String, f64>,
 }
 
 // a.rs
@@ -93,6 +94,7 @@ pub struct TraderConfig<T: Strategy + Send> {
     pub order_engine_tx: mpsc::Sender<OrderWithResponse>,
     pub api_key: String,
     pub api_secret: String,
+    pub initial_positions: HashMap<String, f64>,
 }
 
 impl<T: Strategy + Send> Executioner<T> {
@@ -108,6 +110,7 @@ impl<T: Strategy + Send> Executioner<T> {
             order_engine: config.order_engine_tx,
             candle_input: config.candle_data_rx,
             client: RoostooClient::new(config.api_key, config.api_secret),
+            bootstrap_positions: config.initial_positions,
         };
     }
 
@@ -134,6 +137,21 @@ impl<T: Strategy + Send> Executioner<T> {
                 Some(c) => c,
             };
             ctx.update(candle_message.candle);
+            if let Some(qty) = self.bootstrap_positions.remove(&ctx.symbol) {
+                if qty > 0.0 && !ctx.position.is_open() && ctx.last_close > 0.0 {
+                    if let Err(err) = ctx.position.add_fill(qty, ctx.last_close, 0.0, None) {
+                        println!(
+                            "[ERROR][BOOTSTRAP] Failed to seed {} with {} units: {}",
+                            ctx.symbol, qty, err
+                        );
+                    } else {
+                        println!(
+                            "[INFO][BOOTSTRAP] Restored {} with existing position of {} units",
+                            ctx.symbol, qty
+                        );
+                    }
+                }
+            }
             index += 1;
 
             let capital: f64;

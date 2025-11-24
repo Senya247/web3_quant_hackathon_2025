@@ -1,6 +1,7 @@
 use crate::fourier::Candle;
 use crate::strategy::{CandleData, Executioner, Strategy, TraderConfig};
 use anyhow::Result;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 
@@ -26,6 +27,7 @@ impl<T: Strategy + Send + 'static> BackTester<T> {
             order_engine_tx: oe_tx,
             api_key: "BACKTEST".to_string(),
             api_secret: "BACKTEST".to_string(),
+            initial_positions: HashMap::new(),
         };
 
         let mut executioner = Executioner::new(config);
