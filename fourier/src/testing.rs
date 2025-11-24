@@ -1,15 +1,7 @@
-use binance::{api::Binance, market::Market};
-use core::f64;
 use dotenv::dotenv;
-use fourier::{
-    backtest::BackTester,
-    fourier::{Candle, Fourier},
-    roostoo::{OrderSide, OrderType, RoostooClient},
-};
-use plotly::{Bar, Plot, Scatter};
+use plotly::{Bar, Plot};
 use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{env, iter::Skip};
 
 #[derive(Debug, Deserialize, Copy, Clone, Default)]
 pub struct CandleMod {
@@ -27,9 +19,6 @@ pub struct CandleMod {
 fn main() {
     dotenv().ok();
 
-    let rs_api_key = env::var("ROOSTOO_API_KEY").unwrap();
-    let rs_api_secret = env::var("ROOSTOO_API_SECRET").unwrap();
-
     // let strategy = Fourier {};
     // let mut backtest = BackTester::create(strategy);
     // let _ = backtest.begin("/home/taru/Programming/comp/web3_quant_hackathon_2025/historical/BTCUSDT-1s-candles-2025-10.csv").await;
@@ -42,8 +31,6 @@ fn main() {
             .unwrap()
             .as_secs()
     );
-
-    use std::cmp::{max, min};
 
     let mut reader =
         csv::Reader::from_path("../../historical/BTCUSDT-1s-candles-2025-10.csv").unwrap();
@@ -62,7 +49,7 @@ fn main() {
         let cur = candle.close;
 
         if let Some(p) = prev {
-            let delta = (cur*10.0 - p*10.0).round() as i64;
+            let delta = (cur * 10.0 - p * 10.0).round() as i64;
 
             // check if delta is inside the bucket range
             if delta >= min_delta && delta < max_delta {

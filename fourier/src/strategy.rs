@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
 
+const MAX_CANDLE_HISTORY: usize = 2048;
+
 pub struct Indicators {}
 
 impl Indicators {}
@@ -27,7 +29,11 @@ impl ExecContext {
     fn update(&mut self, candle: Candle) {
         self.last_close = candle.close;
         self.candles.push(candle);
-        self.position.update_unrealized(self.last_close);
+        if self.candles.len() > MAX_CANDLE_HISTORY {
+            let drop_len = self.candles.len() - MAX_CANDLE_HISTORY;
+            self.candles.drain(0..drop_len);
+        }
+        let _ = self.position.update_unrealized(self.last_close);
     }
 }
 
@@ -153,7 +159,9 @@ impl<T: Strategy + Send> Executioner<T> {
                     let price = ctx.last_close;
                     let qty = ctx.position.quantity;
                     let fees = 0.001 * price * qty;
-                    let _ = ctx.position.close_all(price, fees);
+                    if let Err(err) = ctx.position.close_all(price, fees) {
+                        println!("[ERROR][BACKTEST] Failed to close position: {}", err);
+                    }
                     {
                         let mut guard = self.shared_state.lock().await;
                         guard.capital += qty * price - fees;
@@ -173,21 +181,25 @@ impl<T: Strategy + Send> Executioner<T> {
                         precision: ctx.precision,
                         response: tx,
                     };
-                    let _ = self.order_engine.send(orderwithresponse);
-                    match rx.await {
-                        // hopefully instant?
-                        Ok(order_detail) => {
-                            match self.sync(Some(order_detail)).await {
-                                Some((qty, price, fee)) => {
-                                    let _ = ctx.position.reduce(qty, price, fee);
+                    if let Err(e) = self.order_engine.send(orderwithresponse).await {
+                        println!("[ERROR][ORDERENGINE] Failed to dispatch close order: {}", e);
+                    } else {
+                        match rx.await {
+                            Ok(order_detail) => {
+                                if let Some((qty, price, fee)) = self.sync(Some(order_detail)).await
+                                {
+                                    if let Err(err) = ctx.position.reduce(qty, price, fee) {
+                                        println!("[ERROR][POSITION] Reduce failed: {}", err);
+                                    }
+                                } else {
+                                    println!(
+                                        "[ERROR][UPDATEPOSITION] Sync returned no fill details"
+                                    );
                                 }
-                                None => {
-                                    println!("[ERROR][UPDATEPOSITION] Sync fucked me over");
-                                }
-                            };
-                        }
-                        Err(e) => {
-                            println!("Could not receive data from OrderEngine oneshot: {}", e);
+                            }
+                            Err(e) => {
+                                println!("[ERROR][ORDERENGINE] Could not receive fill: {}", e);
+                            }
                         }
                     }
                 }
@@ -203,7 +215,9 @@ impl<T: Strategy + Send> Executioner<T> {
                         let qty = order.quantity;
                         let price = ctx.last_close;
                         let fee = qty * price * 0.001;
-                        ctx.position.add_fill(qty, price, fee, None);
+                        if let Err(err) = ctx.position.add_fill(qty, price, fee, None) {
+                            println!("[ERROR][BACKTEST] Unable to add fill: {}", err);
+                        }
                         {
                             let mut guard = self.shared_state.lock().await;
                             guard.capital -= qty * price + fee;
@@ -215,23 +229,35 @@ impl<T: Strategy + Send> Executioner<T> {
                             precision: ctx.precision,
                             response: tx,
                         };
-                        let _ = self.order_engine.send(orderwithresponse).await; // god forbit this
-                        // goes wrong
-                        // update local stuff
-                        match rx.await {
-                            // hopefully instant?
-                            Ok(order_detail) => {
-                                match self.sync(Some(order_detail)).await {
+                        if let Err(e) = self.order_engine.send(orderwithresponse).await {
+                            println!("[ERROR][ORDERENGINE] Failed to dispatch open order: {}", e);
+                        } else {
+                            // update local stuff
+                            match rx.await {
+                                // hopefully instant?
+                                Ok(order_detail) => match self.sync(Some(order_detail)).await {
                                     Some((qty, price, fee)) => {
-                                        let _ = ctx.position.add_fill(qty, price, fee, None);
+                                        if let Err(err) =
+                                            ctx.position.add_fill(qty, price, fee, None)
+                                        {
+                                            println!(
+                                                "[ERROR][POSITION] Failed to register fill: {}",
+                                                err
+                                            );
+                                        }
                                     }
                                     None => {
-                                        println!("[ERROR][UPDATEPOSITION] Sync fucked me over");
+                                        println!(
+                                            "[ERROR][UPDATEPOSITION] Sync returned no fill data"
+                                        );
                                     }
-                                };
-                            }
-                            Err(e) => {
-                                println!("Could not receive data from OrderEngine oneshot: {}", e);
+                                },
+                                Err(e) => {
+                                    println!(
+                                        "Could not receive data from OrderEngine oneshot: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
@@ -241,7 +267,7 @@ impl<T: Strategy + Send> Executioner<T> {
             self.cryptos.insert(candle_message.symbol, ctx);
 
             // periodic wallet sync cause floating point is gay
-            if index % (l * 15) == 0 && !backtesting {
+            if l > 0 && index % (l * 15) == 0 && !backtesting {
                 self.sync(None).await;
             }
         }
@@ -258,7 +284,11 @@ impl<T: Strategy + Send> Executioner<T> {
                         println!("[ERROR][Sync] Could not fetch balance: {}", e);
                     }
                     Ok(balance_info) => {
-                        let capital_copy = balance_info.spot_wallet.get("USD").unwrap().free;
+                        let Some(balance) = balance_info.spot_wallet.get("USD") else {
+                            println!("[ERROR][Sync] USD balance missing in wallet snapshot");
+                            return None;
+                        };
+                        let capital_copy = balance.free;
                         {
                             let mut guard = self.shared_state.lock().await;
                             guard.capital = capital_copy;
@@ -296,7 +326,7 @@ impl<T: Strategy + Send> Executioner<T> {
                 }
                 println!(
                     "[SUCCESS][SYNC] Order {}: sym: {} qty: {} price: {}, capital: {}",
-                    ["BUY", "GAY", "SELL"][(sign + 1.0) as usize],
+                    if sign > 0.0 { "SELL" } else { "BUY" },
                     details.pair,
                     qty,
                     price,

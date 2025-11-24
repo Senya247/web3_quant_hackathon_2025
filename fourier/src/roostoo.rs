@@ -1,7 +1,7 @@
 use hmac::{Hmac, Mac};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use sha2::Sha256;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -26,7 +26,7 @@ pub enum RoostooError {
     InvalidParameter(String),
 
     #[error("Invalid JSON: {0}")]
-    JsonParseError(String)
+    JsonParseError(String),
 }
 
 #[derive(Debug, Clone)]
@@ -320,10 +320,9 @@ impl RoostooClient {
 
         let mut params = HashMap::new();
         params.insert("timestamp", timestamp.to_string());
-        // if let Some(p) = pair {
-        //     params.insert("pair", p.to_string());
-        // }
-        params.insert("pair", pair.unwrap().to_string());
+        if let Some(p) = pair {
+            params.insert("pair", p.to_string());
+        }
 
         let response = self.client.get(&url).query(&params).send().await?;
 

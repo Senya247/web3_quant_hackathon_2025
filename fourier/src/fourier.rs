@@ -147,7 +147,7 @@ impl Position {
         }
 
         if !self.is_open() {
-            return self.open_new(qty, price, fee, Some(now_unix_secs()));
+            return self.open_new(qty, price, fee, time_unix_secs);
         }
 
         // update VWAP entry price and average fee per unit
@@ -158,6 +158,9 @@ impl Position {
         self.entry_price = new_vwap;
         self.avg_fee_per_unit = new_avg_fee;
         self.quantity = total_qty;
+        if self.entry_time.is_none() {
+            self.entry_time = Some(time_unix_secs.unwrap_or_else(now_unix_secs));
+        }
         Ok(())
     }
 
@@ -224,7 +227,30 @@ impl Strategy for Fourier {
         ctx: &mut ExecContext,
         shared_state: Arc<Mutex<SharedState>>,
     ) -> bool {
-        return true;
+        if ctx.position.is_open() {
+            return false;
+        }
+
+        if ctx.candles.len() < 32 {
+            return false;
+        }
+
+        let indicators = Indicators::new(&ctx.candles);
+        let short = indicators.ema(12);
+        let long = indicators.ema(26);
+        let rsi = indicators.rsi(14);
+        let has_capital = {
+            let guard = shared_state.lock().await;
+            guard.capital > 0.0
+        };
+        if !has_capital {
+            return false;
+        }
+
+        match (short, long, rsi) {
+            (Some(short), Some(long), Some(rsi)) => short > long && rsi < 60.0,
+            _ => false,
+        }
     }
 
     async fn go_long(
@@ -232,20 +258,28 @@ impl Strategy for Fourier {
         ctx: &ExecContext,
         shared_state: Arc<Mutex<SharedState>>,
     ) -> Option<Order> {
-        let streak: f64;
-        let capital: f64;
-        {
+        let indicators = Indicators::new(&ctx.candles);
+        let atr = indicators.atr(14).unwrap_or(ctx.last_close * 0.01);
+
+        let risk_capital = {
             let guard = shared_state.lock().await;
-            streak = guard.streak as f64;
-            capital = guard.capital;
+            (guard.capital * 0.02).max(0.0)
+        };
+        if risk_capital == 0.0 || ctx.last_close == 0.0 {
+            return None;
         }
-        let qty: f64 = 0.05 * capital / ctx.last_close * (streak * -0.5).exp();
+
+        let per_unit_risk = atr.max(1e-6);
+        let position_size = (risk_capital / per_unit_risk).min(guarded_max_size(ctx.last_close));
+        if position_size <= 0.0 {
+            return None;
+        }
 
         let order: Order = Order {
             pair: [ctx.symbol.clone(), "/USD".to_string()].concat(),
             side: OrderSide::Buy,
             order_type: OrderType::Market,
-            quantity: qty,
+            quantity: position_size,
             price: None,
         };
 
@@ -256,23 +290,32 @@ impl Strategy for Fourier {
     async fn update_position(
         &self,
         ctx: &ExecContext,
-        shared_state: Arc<Mutex<SharedState>>,
+        _shared_state: Arc<Mutex<SharedState>>,
     ) -> bool {
-        if !ctx.position.is_open() { // wha tthe fuck happened?
+        if !ctx.position.is_open() {
             return false;
         }
 
         let pct = ctx.position.unrealized_pct(ctx.last_close);
-        match pct {
-            Some(p) => {
-                if p > 0.5 || p < -1.0 {
-                    return true;
-                }
-                return false;
-            }
-            None => {
-                return false;
-            }
+        let target = match pct {
+            Some(p) => p,
+            None => return false,
         };
+
+        let stop_loss = -2.0;
+        let take_profit = 4.0;
+
+        if target <= stop_loss || target >= take_profit {
+            return true;
+        }
+
+        false
     }
+}
+
+fn guarded_max_size(price: f64) -> f64 {
+    if price <= 0.0 {
+        return 0.0;
+    }
+    10_000.0 / price
 }

@@ -1,5 +1,3 @@
-use std::any::Any;
-
 use crate::roostoo::{OrderDetail, RoostooClient};
 use crate::strategy::Order;
 use tokio::sync::{mpsc, oneshot};
@@ -58,10 +56,10 @@ impl OrderEngine {
                             println!("Order succeeded but no details returned");
                         }
                     } else {
-                        println!("Order failed: {}", result.err_msg);
+                        println!("[ERROR][ORDERENGINE] Order failed: {}", result.err_msg);
                     }
                 }
-                Err(e) => println!("Genuinly what the fuck happened: {}", e),
+                Err(e) => println!("[ERROR][ORDERENGINE] Failed to place order: {}", e),
             }
         }
     }

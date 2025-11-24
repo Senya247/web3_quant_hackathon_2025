@@ -1,79 +1,62 @@
-use std::thread::sleep;
-use std::time::Duration;
-
-use crate::fourier::{Candle, Fourier};
-use crate::order_engine::OrderEngine;
+use crate::fourier::Candle;
 use crate::strategy::{CandleData, Executioner, Strategy, TraderConfig};
 use anyhow::Result;
-use plotly::{Plot, Scatter};
 use tokio::sync::mpsc;
+use tokio::time::{Duration, sleep};
 
 pub struct BackTester<T> {
     strategy: T,
 }
 
-impl<T: Strategy> BackTester<T> {
+impl<T: Strategy + Send + 'static> BackTester<T> {
     pub fn create(strategy: T) -> Self {
         BackTester { strategy }
     }
-    // take &mut self so we can call &mut methods on the strategy
-    pub async fn begin(&mut self, csv_file: &str) -> Result<f64> {
-        let mut reader = csv::Reader::from_path(csv_file)?;
 
-        let warmup_candles: i64 = 15;
-        let mut num_candle: i64 = 0;
-
-        let mut index: Vec<i64> = Vec::new();
-        let mut btc_price: Vec<f64> = Vec::new();
-        let mut capital: Vec<f64> = Vec::new();
+    pub async fn begin(self, csv_file: &str, symbol: &str, initial_capital: f64) -> Result<f64> {
+        let reader = csv::Reader::from_path(csv_file)?;
 
         let (candle_tx, candle_rx) = mpsc::channel(32);
-        let (oe_tx, oe_rx) = mpsc::channel(32);
-
-        // let _t = tokio::spawn(async move {
-        // let mut order_engine = OrderEngine::build("SEX".into(), "SEX".into());
-        // order_engine.run(oe_rx).await;
-        // });
-
-        let strategy = Fourier {};
+        let (oe_tx, _oe_rx) = mpsc::channel(1);
 
         let config = TraderConfig {
-            initial_capital: 100000.0,
-            strategy: strategy,
+            initial_capital,
+            strategy: self.strategy,
             candle_data_rx: candle_rx,
             order_engine_tx: oe_tx,
-            api_key: "SEX".to_string(),
-            api_secret: "SEX".to_string(),
+            api_key: "BACKTEST".to_string(),
+            api_secret: "BACKTEST".to_string(),
         };
 
-        let _t = tokio::spawn(async move {
-            let mut executioner = Executioner::new(config);
-            executioner.add_symbol("DOGE".into(), 0);
-            executioner.run(true).await;
+        let mut executioner = Executioner::new(config);
+        executioner.add_symbol(symbol.to_string(), 3);
+
+        let symbol_name = symbol.to_string();
+        let producer = tokio::spawn(async move {
+            let tx = candle_tx;
+            let mut reader = reader;
+            for row in reader.deserialize::<Candle>() {
+                match row {
+                    Ok(candle) => {
+                        let candle_data = CandleData {
+                            symbol: symbol_name.clone(),
+                            candle,
+                        };
+
+                        if tx.send(candle_data).await.is_err() {
+                            break;
+                        }
+                        sleep(Duration::from_millis(1)).await;
+                    }
+                    Err(e) => {
+                        println!("[ERROR][BACKTEST] Failed to parse candle: {}", e);
+                    }
+                }
+            }
         });
 
-        for row in reader.deserialize() {
-            let candle: Candle = row?;
-            let candle_data = CandleData {
-                symbol: "DOGE".to_string(),
-                candle: candle,
-            };
-
-            let _ = candle_tx.send(candle_data).await;
-
-            sleep(Duration::new(0, 100));
-        }
-
-        // Optional: Close any remaining position at the end
-        // if self.strategy.has_open_position() {
-        //     self.strategy.liquidiate();
-        // }
-
-        // let mut plot = Plot::new();
-        // plot.add_trace(Scatter::new(index.clone(), btc_price).name("BTC"));
-        // plot.add_trace(Scatter::new(index, capital).name("Portfolio"));
-        // plot.show();
-        // Ok(self.strategy.capital())
-        Ok(0.0)
+        executioner.run(true).await;
+        let _ = producer.await;
+        Ok(initial_capital)
     }
 }

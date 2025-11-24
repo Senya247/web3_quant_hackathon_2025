@@ -10,34 +10,42 @@ impl<'a> Indicators<'a> {
     }
 
     pub fn ema(&self, period: usize) -> Option<f64> {
-        if self.candles.is_empty() || period == 0 {
+        if period == 0 || self.candles.len() < period {
             return None;
         }
 
         let alpha = 2.0 / (period as f64 + 1.0);
-        let mut ema = self.candles[0].close; // BUG: Using oldest candle first
+        let start = self.candles.len() - period;
+        let window = &self.candles[start..];
+        let mut ema = window[0].close;
 
-        for candle in self.candles.iter().skip(1) {
+        for candle in window.iter().skip(1) {
             ema = alpha * candle.close + (1.0 - alpha) * ema;
         }
 
         Some(ema)
     }
-    pub fn ema_series<I>(&self, data: I, period: usize) -> f64
+
+    pub fn ema_series<I>(&self, data: I, period: usize) -> Option<f64>
     where
         I: IntoIterator<Item = f64>,
     {
-        let alpha = 2.0 / (period as f64 + 1.0);
-        let mut iter = data.into_iter();
-
-        let first_value = iter.next().unwrap();
-        let mut ema = first_value;
-
-        for value in iter {
-            ema = alpha * value + (1.0 - alpha) * ema;
+        if period == 0 {
+            return None;
         }
 
-        ema
+        let mut values: Vec<f64> = data.into_iter().collect();
+        if values.len() < period {
+            return None;
+        }
+        values = values.split_off(values.len() - period);
+
+        let alpha = 2.0 / (period as f64 + 1.0);
+        let mut ema = values[0];
+        for value in values.iter().skip(1) {
+            ema = alpha * value + (1.0 - alpha) * ema;
+        }
+        Some(ema)
     }
 
     pub fn stddev_series<I>(&self, data: I, period: usize) -> Option<f64>
@@ -50,9 +58,9 @@ impl<'a> Indicators<'a> {
             return None;
         }
 
-        let mean = values.iter().sum::<f64>() / values.len() as f64;
-        let variance =
-            values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / values.len() as f64;
+        let window = &values[values.len() - period..];
+        let mean = window.iter().sum::<f64>() / period as f64;
+        let variance = window.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / period as f64;
 
         Some(variance.sqrt())
     }
@@ -62,11 +70,8 @@ impl<'a> Indicators<'a> {
             return None;
         }
 
-        let sum: f64 = self
-            .candles
+        let sum: f64 = self.candles[self.candles.len() - period..]
             .iter()
-            .rev()
-            .take(period)
             .map(|c| c.close)
             .sum();
 
@@ -74,19 +79,20 @@ impl<'a> Indicators<'a> {
     }
 
     pub fn rsi(&self, period: usize) -> Option<f64> {
-        if self.candles.len() <= period {
+        if period == 0 || self.candles.len() <= period {
             return None;
         }
 
-        let mut gains = 0.0;
-        let mut losses = 0.0;
+        let window = &self.candles[self.candles.len() - (period + 1)..];
+        let mut gains = 0.0f64;
+        let mut losses = 0.0f64;
 
-        for i in 1..=period {
-            let change = self.candles[i].close - self.candles[i - 1].close;
+        for i in 1..window.len() {
+            let change = window[i].close - window[i - 1].close;
             if change > 0.0 {
                 gains += change;
             } else {
-                losses -= change;
+                losses += change.abs();
             }
         }
 
@@ -108,21 +114,15 @@ impl<'a> Indicators<'a> {
         }
 
         let mut sum = 0.0;
-        // Use most recent candles
-        let start_idx = self.candles.len().saturating_sub(period);
+        let start_idx = self.candles.len() - period;
 
         for i in start_idx..self.candles.len() {
-            if i == 0 {
-                continue;
-            } // Skip first candle if it's the first one
+            let prev = &self.candles[i - 1];
+            let cur = &self.candles[i];
 
-            let high = self.candles[i].high;
-            let low = self.candles[i].low;
-            let prev_close = self.candles[i - 1].close;
-
-            let tr1 = high - low;
-            let tr2 = (high - prev_close).abs();
-            let tr3 = (low - prev_close).abs();
+            let tr1 = cur.high - cur.low;
+            let tr2 = (cur.high - prev.close).abs();
+            let tr3 = (cur.low - prev.close).abs();
 
             sum += tr1.max(tr2).max(tr3);
         }

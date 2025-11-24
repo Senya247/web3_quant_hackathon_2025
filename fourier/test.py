@@ -5,7 +5,7 @@ import hashlib
 
 
 BASE_URL = "https://mock-api.roostoo.com"
-API_KEY = "fQGiey9uIS1A2ocjqVt9bxh73mduu4xoREiaHcVsjoWtFQMcS7GAAVzEz2k7nFmc"
+API_KEY = "bmpkW4mdv3ph7q3I9lHAsDCknhrn4nemJI9e50F0iluZkLBqGznQB8y9TWHQCFcK"
 SECRET_KEY = "yxmU4w0RIs31D1okQxucsVGSmpRX85i0hy9rDcQkRsGGEzbnAaPs8emWUt6gTJyn"
 
 
